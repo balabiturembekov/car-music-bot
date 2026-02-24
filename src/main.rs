@@ -12,6 +12,8 @@ use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery,
 };
 use tokio::sync::Semaphore;
+use url::Url;
+use urlencoding::encode;
 
 // Клавиатура выбора режима
 fn make_keyboard(url: &str) -> InlineKeyboardMarkup {
@@ -95,6 +97,9 @@ async fn handle_message(
     msg: Message,
     repo: Arc<dyn UserRepository>,
 ) -> ResponseResult<()> {
+    let me = bot.get_me().await?;
+    let bot_username = me.user.username.expect("Bot must have username");
+
     if let Some(text) = msg.text() {
         let user_id = msg.chat.id.0;
 
@@ -116,19 +121,32 @@ async fn handle_message(
 
             // После обработки реферала или если его нет — показываем профиль
             let balance = repo.get_balance(user_id).await;
-            let ref_link = format!("https://t.me{}", user_id);
+            let ref_link = format!("https://t.me/{}?start={}", bot_username, user_id);
+
+            let share_url = format!(
+                "https://t.me/share/url?url={}&text={}",
+                encode(&ref_link),
+                encode("Смотри, этот бот качает 8D звук для машины! 🏎🔊"),
+            );
+
+            let keyboard = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::url(
+                "🚀 Переслать другу",
+                Url::parse(&share_url).expect("Invalid share url"),
+            )]]);
 
             bot.send_message(
                 msg.chat.id,
                 format!(
                     "<b>🏎 Привет в DeepDrive AI!</b>\n\n\
                     💳 Твой баланс: <b>{}</b> кредитов.\n\n\
-                    🔗 Твоя ссылка для друзей:\n<code>{}</code>\n\n\
-                    <i>Пришли ссылку на YouTube, чтобы прокачать звук!</i>",
+                    🔗 <b>Твоя ссылка для друзей:</b>\n{}\n\n\
+                    <i>Пригласи друга и получи <b>+2 трека</b> на баланс!</i>",
                     balance, ref_link
                 ),
             )
             .parse_mode(teloxide::types::ParseMode::Html)
+            // Добавляем кнопку "Поделиться", это самый удобный способ распространения
+            .reply_markup(keyboard)
             .await?;
             return Ok(());
         }
