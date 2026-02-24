@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT referrer_by FROM users WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "referrer_by",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "41d1d0cca7ab0f2664b24387378eed2c8246830cc12ce0f7743dbcb7f1ecf50d"
+}

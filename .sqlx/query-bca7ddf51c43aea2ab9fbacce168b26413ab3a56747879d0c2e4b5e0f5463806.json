@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO users (user_id, balance, referrer_by) VALUES (?, 3, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "bca7ddf51c43aea2ab9fbacce168b26413ab3a56747879d0c2e4b5e0f5463806"
+}

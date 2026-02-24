@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE users SET referrer_by = ?, balance = balance + 3 WHERE user_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "73deb89834b3899170e6c60501487174f95e4a175576634c30bbcf133df565d0"
+}
