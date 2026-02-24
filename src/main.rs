@@ -8,11 +8,9 @@ use crate::infrastructure::sqlite_user_repo::SqliteUserRepo;
 use sqlx::sqlite::SqlitePoolOptions;
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::BotCommand;
 use teloxide::types::{
     CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, PreCheckoutQuery,
 };
-
 use tokio::sync::Semaphore;
 
 // Клавиатура выбора режима
@@ -69,29 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let handler = dptree::entry()
         .branch(
             Update::filter_message()
-                .filter(|msg: Message| {
-                    msg.text()
-                        .map_or(false, |t| t == "/profile" || t == "/start")
-                })
-                .endpoint(handle_profile),
-        )
-        .branch(
-            Update::filter_message()
                 .filter(|msg: Message| msg.successful_payment().is_some())
                 .endpoint(handle_successful_payment),
         )
         .branch(Update::filter_pre_checkout_query().endpoint(handle_pre_checkout))
         .branch(Update::filter_message().endpoint(handle_message))
         .branch(Update::filter_callback_query().endpoint(handle_callback));
-
-    let commands = vec![
-        BotCommand::new("start", "🚀 Запустить бота"),
-        BotCommand::new("profile", "👤 Мой баланс и ID"),
-        BotCommand::new("help", "❓ Как пользоваться"),
-    ];
-
-    bot.set_my_commands(commands).await?;
-    log::info!("🚀 Команды зарегистрированы, бот запущен!");
 
     log::info!("🚀 Бот DeepDrive AI запущен!");
 
@@ -111,42 +92,83 @@ async fn handle_message(
     repo: Arc<dyn UserRepository>,
 ) -> ResponseResult<()> {
     if let Some(text) = msg.text() {
-        // Проверяем, является ли текст ссылкой на YouTube (обычная, мобильная или Shorts)
-        if text.contains("://youtube.com") || 
-           text.contains("youtu.be/") || 
-           text.contains("://youtube.com") 
-        {
-            let user_id = msg.chat.id.0;
+        let user_id = msg.chat.id.0;
+
+        // 1. ОБРАБОТКА РЕФЕРАЛЬНОЙ ССЫЛКИ И КОМАНДЫ /START
+        if text.starts_with("/start") {
+            let parts: Vec<&str> = text.split_whitespace().collect();
+
+            // Если есть аргумент после /start (например, /start 12345678)
+            if parts.len() > 1 {
+                if let Ok(inviter_id) = parts[1].parse::<i64>() {
+                    // Пытаемся зарегистрировать реферала (бонус обоим)
+                    if user_id != inviter_id && repo.register_referral(user_id, inviter_id).await {
+                        bot.send_message(msg.chat.id, "🎁 <b>Добро пожаловать!</b>\n\nТы зашел по приглашению: тебе начислено 3 стартовых трека, а твоему другу +2 бонуса!")
+                            .parse_mode(teloxide::types::ParseMode::Html)
+                            .await?;
+                    }
+                }
+            }
+
+            // После обработки реферала или если его нет — показываем профиль
             let balance = repo.get_balance(user_id).await;
+            let ref_link = format!("https://t.me{}", user_id);
 
-            // Формируем текст в зависимости от типа ссылки
-            let msg_text = if text.contains("shorts") {
-                format!(
-                    "🎬 <b>О, это Shorts!</b> Сейчас вытяну из него полный звук.\n\n💳 Твой баланс: <b>{}</b> кредитов.\nВыбери режим прокачки:", 
-                    balance
-                )
-            } else {
-                format!(
-                    "💳 Твой баланс: <b>{}</b> кредитов.\n\nВыбери режим прокачки для этого видео:", 
-                    balance
-                )
-            };
-
-            // Отправляем сообщение с клавиатурой
-            bot.send_message(msg.chat.id, msg_text)
-                .parse_mode(teloxide::types::ParseMode::Html)
-                .reply_markup(make_keyboard(text)) // Используем 'text' как URL для кнопок
-                .await?;
-        } 
-        // Если это не ссылка и не команда (команды обрабатываются в дереве выше), 
-        // можно добавить подсказку:
-        else if !text.starts_with('/') {
             bot.send_message(
-                msg.chat.id, 
-                "📥 Пришли мне ссылку на <b>YouTube</b> видео или <b>Shorts</b>, и я прокачаю звук для твоей машины! 🏎💨"
+                msg.chat.id,
+                format!(
+                    "<b>🏎 Привет в DeepDrive AI!</b>\n\n\
+                    💳 Твой баланс: <b>{}</b> кредитов.\n\n\
+                    🔗 Твоя ссылка для друзей:\n<code>{}</code>\n\n\
+                    <i>Пришли ссылку на YouTube, чтобы прокачать звук!</i>",
+                    balance, ref_link
+                ),
             )
             .parse_mode(teloxide::types::ParseMode::Html)
             .await?;
+            return Ok(());
+        }
+
+        // 2. ОБРАБОТКА КОМАНДЫ /PROFILE
+        if text == "/profile" {
+            let balance = repo.get_balance(user_id).await;
+            let ref_link = format!("https://t.me{}", user_id);
+
+            bot.send_message(
+                msg.chat.id,
+                format!(
+                    "<b>👤 Твой профиль</b>\n\n\
+                    🆔 ID: <code>{}</code>\n\
+                    ⛽️ Баланс: <b>{}</b> треков\n\n\
+                    🔗 Реферальная ссылка:\n<code>{}</code>\n\n\
+                    <i>За каждого друга даем +2 трека!</i>",
+                    user_id, balance, ref_link
+                ),
+            )
+            .parse_mode(teloxide::types::ParseMode::Html)
+            .reply_markup(make_payment_keyboard())
+            .await?;
+            return Ok(());
+        }
+
+        // 3. ОБРАБОТКА ССЫЛОК YOUTUBE
+        if text.contains("youtu") {
+            let balance = repo.get_balance(user_id).await;
+            bot.send_message(
+                msg.chat.id,
+                format!(
+                    "💳 Твой баланс: <b>{}</b> кредитов.\n\nВыбери режим прокачки:",
+                    balance
+                ),
+            )
+            .parse_mode(teloxide::types::ParseMode::Html)
+            .reply_markup(make_keyboard(text))
+            .await?;
+        }
+        // Если просто текст — подсказываем, что делать
+        else {
+            bot.send_message(msg.chat.id, "📥 Пришли ссылку на YouTube видео или Shorts!")
+                .await?;
         }
     }
     Ok(())
@@ -160,17 +182,21 @@ async fn handle_callback(
     semaphore: Arc<Semaphore>,
 ) -> ResponseResult<()> {
     let user_id = q.from.id.0 as i64;
-    let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(q.from.id.into());
+    let chat_id = q
+        .message
+        .as_ref()
+        .map(|m| m.chat().id)
+        .unwrap_or(q.from.id.into());
 
     if let Some(data) = q.data {
-        // 1. ОБРАБОТКА НАЖАТИЯ КНОПКИ ОПЛАТЫ
+        // ОБРАБОТКА ОПЛАТЫ
         if data == "buy_10_credits" {
-            let _ = bot.answer_callback_query(q.id).await;
+            bot.answer_callback_query(q.id).await?;
             handle_buy_credits(bot, chat_id).await?;
             return Ok(());
         }
 
-        // 2. РАЗБОР ДАННЫХ ПРЕСЕТА (формат "preset|url")
+        // ОБРАБОТКА ПРЕСЕТОВ
         let parts: Vec<&str> = data.split('|').collect();
         if parts.len() < 2 {
             return Ok(());
@@ -186,9 +212,9 @@ async fn handle_callback(
             _ => return Ok(()),
         };
 
-        // 3. ПРОВЕРКА БАЛАНСА
+        // Проверка баланса ПЕРЕД запуском скачивания
         if !repo.use_credit(user_id).await {
-            let _ = bot.answer_callback_query(q.id).await;
+            bot.answer_callback_query(q.id).await?;
             bot.send_message(
                 chat_id,
                 "⚠️ У тебя 0 кредитов. Пополни баланс для продолжения! ⭐️",
@@ -198,19 +224,15 @@ async fn handle_callback(
             return Ok(());
         }
 
-        // 4. ЗАПУСК ОБРАБОТКИ
         if let Some(msg) = q.message {
-            // Ограничиваем количество одновременных задач
             let _permit = semaphore.acquire().await.unwrap();
             let _ = bot.answer_callback_query(q.id).await;
 
-            // Уведомляем пользователя о начале
-            let _ = bot.edit_message_text(chat_id, msg.id(), "🏎 Запускаю двигатели... Процесс пошел!")
-                .await;
+            bot.edit_message_text(chat_id, msg.id(), "🏎 Запускаю двигатели... Процесс пошел!")
+                .await?;
 
             match service.process_track(url, preset).await {
                 Ok((path, meta)) => {
-                    // Форматируем время: 04:20
                     let mins = meta.duration / 60;
                     let secs = meta.duration % 60;
                     let duration_str = format!("{:02}:{:02}", mins, secs);
@@ -218,7 +240,6 @@ async fn handle_callback(
                     let file = teloxide::types::InputFile::file(&path)
                         .file_name(format!("{}.mp3", meta.title));
 
-                    // Отправляем готовое аудио
                     let _ = bot.send_audio(chat_id, file)
                         .caption(format!(
                             "✅ <b>Готово для авто!</b>\n\n🎵 {}\n👤 {}\n⏱ Длительность: <code>{}</code>", 
@@ -226,16 +247,10 @@ async fn handle_callback(
                         ))
                         .parse_mode(teloxide::types::ParseMode::Html)
                         .await;
-
-                    // Удаляем временный файл
                     let _ = tokio::fs::remove_file(path).await;
                 }
                 Err(e) => {
-                    // Если произошла ошибка (например, видео > 45 мин)
                     let _ = bot.send_message(chat_id, format!("❌ Ошибка: {}", e)).await;
-                    
-                    // Возвращаем кредит пользователю, так как услуга не оказана
-                    let _ = repo.add_balance(user_id, 1).await;
                 }
             }
         }
@@ -273,30 +288,5 @@ async fn handle_successful_payment(
         "🎉 Успешно! Вам начислено 10 кредитов. Погнали! 🏎💨",
     )
     .await?;
-    Ok(())
-}
-
-async fn handle_profile(
-    bot: Bot,
-    msg: Message,
-    repo: Arc<dyn UserRepository>,
-) -> ResponseResult<()> {
-    let user_id = msg.chat.id.0;
-    let balance = repo.get_balance(user_id).await;
-
-    // Используем HTML-теги, они не требуют экранирования точек
-    let text = format!(
-        "<b>👤 Твой профиль DeepDrive AI</b>\n\n\
-        🆔 ID: <code>{}</code>\n\
-        ⛽️ Баланс: <b>{}</b> треков\n\n\
-        <i>Используй эти кредиты для улучшения музыки.</i>",
-        user_id, balance
-    );
-
-    bot.send_message(msg.chat.id, text)
-        .parse_mode(teloxide::types::ParseMode::Html) // МЕНЯЕМ ЗДЕСЬ
-        .reply_markup(make_payment_keyboard())
-        .await?;
-
     Ok(())
 }

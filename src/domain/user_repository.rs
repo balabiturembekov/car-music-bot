@@ -7,4 +7,6 @@ pub trait UserRepository: Send + Sync {
     async fn use_credit(&self, user_id: i64) -> bool;
 
     async fn add_balance(&self, user_id: i64, amount: i32) -> Result<(), sqlx::Error>;
+
+    async fn register_referral(&self, target_id: i64, inviter_id: i64) -> bool;
 }

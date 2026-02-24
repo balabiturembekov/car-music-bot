@@ -57,4 +57,29 @@ impl UserRepository for SqliteUserRepo {
             .await?;
         Ok(())
     }
+
+    async fn register_referral(&self, target_id: i64, inviter_id: i64) -> bool {
+        let exists = sqlx::query("SELECT 1 FROM users WHERE user_id = ?")
+            .bind(target_id)
+            .fetch_optional(&self.pool)
+            .await;
+
+        if let Ok(None) = exists {
+            let _ =
+                sqlx::query("INSERT INTO users (user_id, balance, referrer_by) VALUES (?, 3, ?)")
+                    .bind(target_id)
+                    .bind(inviter_id)
+                    .execute(&self.pool)
+                    .await;
+
+            let _ = sqlx::query("UPDATE users SET balance = balance + 2 WHERE user_id = ?")
+                .bind(inviter_id)
+                .execute(&self.pool)
+                .await;
+
+            true
+        } else {
+            false
+        }
+    }
 }
