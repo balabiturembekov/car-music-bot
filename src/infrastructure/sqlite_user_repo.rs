@@ -59,27 +59,62 @@ impl UserRepository for SqliteUserRepo {
     }
 
     async fn register_referral(&self, target_id: i64, inviter_id: i64) -> bool {
-        let exists = sqlx::query("SELECT 1 FROM users WHERE user_id = ?")
-            .bind(target_id)
+        if target_id == inviter_id {
+            // self-referral запрещён
+            return false;
+        }
+
+        // Проверяем есть ли пользователь
+        let user = sqlx::query!("SELECT referrer_by FROM users WHERE user_id = ?", target_id)
             .fetch_optional(&self.pool)
-            .await;
+            .await
+            .ok()
+            .flatten();
 
-        if let Ok(None) = exists {
-            let _ =
-                sqlx::query("INSERT INTO users (user_id, balance, referrer_by) VALUES (?, 3, ?)")
-                    .bind(target_id)
-                    .bind(inviter_id)
-                    .execute(&self.pool)
-                    .await;
-
-            let _ = sqlx::query("UPDATE users SET balance = balance + 2 WHERE user_id = ?")
-                .bind(inviter_id)
+        match user {
+            None => {
+                // Новый пользователь — создаём и начисляем бонус
+                let _ = sqlx::query!(
+                    "INSERT INTO users (user_id, balance, referrer_by) VALUES (?, 3, ?)",
+                    target_id,
+                    inviter_id
+                )
                 .execute(&self.pool)
                 .await;
 
-            true
-        } else {
-            false
+                // Начисляем бонус пригласившему, если он есть
+                let _ = sqlx::query!(
+                    "UPDATE users SET balance = balance + 2 WHERE user_id = ?",
+                    inviter_id
+                )
+                .execute(&self.pool)
+                .await;
+
+                true
+            }
+            Some(referrer) => {
+                // Уже есть пользователь, но реферальный бонус можно начислять только если у него нет реферера
+                if referrer.referrer_by.is_none() {
+                    let _ = sqlx::query!(
+                        "UPDATE users SET referrer_by = ?, balance = balance + 3 WHERE user_id = ?",
+                        inviter_id,
+                        target_id
+                    )
+                    .execute(&self.pool)
+                    .await;
+
+                    let _ = sqlx::query!(
+                        "UPDATE users SET balance = balance + 2 WHERE user_id = ?",
+                        inviter_id
+                    )
+                    .execute(&self.pool)
+                    .await;
+
+                    true
+                } else {
+                    false // уже есть реферер → ничего не делаем
+                }
+            }
         }
     }
 }
