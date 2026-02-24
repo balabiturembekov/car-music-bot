@@ -70,6 +70,7 @@ impl AudioService for FFmpegProcessor {
             AudioPreset::CarBass => "loudnorm=I=-14:TP=-1.5:LRA=11,bass=g=3,treble=g=1",
             AudioPreset::PureHiFi => "loudnorm=I=-16:TP=-1.5:LRA=11",
             AudioPreset::ExtremeLow => "loudnorm=I=-12:TP=-1.0:LRA=11,bass=g=6,treble=g=2",
+            AudioPreset::Surround8D => "loudnorm=I=-14,apulsator=hz=0.1",
         };
 
         // 4. Обработка FFmpeg

@@ -28,6 +28,10 @@ fn make_keyboard(url: &str) -> InlineKeyboardMarkup {
             "🔥 Extreme Low",
             format!("extreme|{}", url),
         )],
+        [InlineKeyboardButton::callback(
+            "🌀 8D Surround",
+            format!("8d|{}", url),
+        )],
     ];
     InlineKeyboardMarkup::new(buttons)
 }
@@ -51,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     sqlx::query(
-        "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 3)",
+        "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 1)",
     )
     .execute(&pool)
     .await?;
@@ -209,6 +213,7 @@ async fn handle_callback(
             "bass" => AudioPreset::CarBass,
             "hifi" => AudioPreset::PureHiFi,
             "extreme" => AudioPreset::ExtremeLow,
+            "8d" => AudioPreset::Surround8D,
             _ => return Ok(()),
         };
 
@@ -262,10 +267,10 @@ async fn handle_buy_credits(bot: Bot, chat_id: ChatId) -> ResponseResult<()> {
     bot.send_invoice(
         chat_id,
         "10 Премиум-загрузок",
-        "Добавляет 10 кредитов для прокачки музыки в 320kbps",
+        "Добавляет 10 кредитов для прокачки музыки (включая 8D эффект)",
         "payload_10_credits",
         "XTR",
-        vec![LabeledPrice::new("10 кредитов", 50)],
+        vec![LabeledPrice::new("10 кредитов", 150)], // ЦЕНА: 150 Звезд (~$3)
     )
     .await?;
     Ok(())

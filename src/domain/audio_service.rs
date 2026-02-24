@@ -16,6 +16,7 @@ pub enum AudioPreset {
     CarBass,
     PureHiFi,
     ExtremeLow,
+    Surround8D,
 }
 
 pub struct AudioMetadata {

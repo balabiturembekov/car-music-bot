@@ -25,7 +25,7 @@ impl UserRepository for SqliteUserRepo {
             Ok(Some(record)) => record.get::<i64, _>(0) as i32,
             _ => {
                 // ИСПОЛЬЗУЕМ self.pool для вставки нового юзера
-                let _ = sqlx::query("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 3)")
+                let _ = sqlx::query("INSERT OR IGNORE INTO users (user_id, balance) VALUES (?, 1)")
                     .bind(user_id)
                     .execute(&self.pool)
                     .await;
