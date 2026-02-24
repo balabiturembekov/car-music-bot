@@ -22,6 +22,7 @@ pub struct AudioMetadata {
     pub title: String,
     pub artist: String,
     pub thumbnail_url: Option<String>,
+    pub duration: u64,
 }
 
 #[async_trait]

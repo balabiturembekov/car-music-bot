@@ -1,1 +1,8 @@
 /target
+users.db
+users.db-journal
+target/
+*.mp3
+*.webm
+.env
+
