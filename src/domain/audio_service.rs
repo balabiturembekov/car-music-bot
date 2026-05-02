@@ -7,7 +7,7 @@ pub enum AudioError {
     #[error("Download failed: {0}")]
     DownloadError(String),
 
-    #[error("Processing failef: {0}")]
+    #[error("Processing failed: {0}")]
     ProcessingError(String),
 }
 

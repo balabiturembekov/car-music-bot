@@ -15,24 +15,29 @@ use tokio::sync::Semaphore;
 use url::Url;
 use urlencoding::encode;
 
+const STARTING_CREDITS: i32 = 3;
+const PACKAGE_CREDITS: i32 = 10;
+const PACKAGE_STARS: u32 = 150;
+const CREDIT_PACKAGE_PAYLOAD: &str = "payload_10_credits";
+
 // Клавиатура выбора режима
-fn make_keyboard(url: &str) -> InlineKeyboardMarkup {
+fn make_keyboard(request_id: &str) -> InlineKeyboardMarkup {
     let buttons = [
         [InlineKeyboardButton::callback(
             "🏎 Car Bass",
-            format!("bass|{}", url),
+            format!("bass|{}", request_id),
         )],
         [InlineKeyboardButton::callback(
             "🎧 Pure Hi-Fi",
-            format!("hifi|{}", url),
+            format!("hifi|{}", request_id),
         )],
         [InlineKeyboardButton::callback(
             "🔥 Extreme Low",
-            format!("extreme|{}", url),
+            format!("extreme|{}", request_id),
         )],
         [InlineKeyboardButton::callback(
             "🌀 8D Surround",
-            format!("8d|{}", url),
+            format!("8d|{}", request_id),
         )],
     ];
     InlineKeyboardMarkup::new(buttons)
@@ -41,7 +46,10 @@ fn make_keyboard(url: &str) -> InlineKeyboardMarkup {
 // Клавиатура оплаты
 fn make_payment_keyboard() -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new([[InlineKeyboardButton::callback(
-        "💳 Купить 10 треков (50 ⭐️)",
+        format!(
+            "💳 Купить {} треков ({} ⭐️)",
+            PACKAGE_CREDITS, PACKAGE_STARS
+        ),
         "buy_10_credits",
     )]])
 }
@@ -56,11 +64,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect("sqlite:users.db?mode=rwc")
         .await?;
 
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, balance INTEGER DEFAULT 1)",
-    )
-    .execute(&pool)
-    .await?;
+    sqlx::migrate!("./migrations").run(&pool).await?;
+    SqliteUserRepo::ensure_schema(&pool).await?;
 
     // 2. Инициализация сервисов (DI)
     let semaphore = Arc::new(Semaphore::new(3));
@@ -108,15 +113,20 @@ async fn handle_message(
             let parts: Vec<&str> = text.split_whitespace().collect();
 
             // Если есть аргумент после /start (например, /start 12345678)
-            if parts.len() > 1 {
-                if let Ok(inviter_id) = parts[1].parse::<i64>() {
-                    // Пытаемся зарегистрировать реферала (бонус обоим)
-                    if user_id != inviter_id && repo.register_referral(user_id, inviter_id).await {
-                        bot.send_message(msg.chat.id, "🎁 <b>Добро пожаловать!</b>\n\nТы зашел по приглашению: тебе начислено 3 стартовых трека, а твоему другу +2 бонуса!")
-                            .parse_mode(teloxide::types::ParseMode::Html)
-                            .await?;
-                    }
-                }
+            if parts.len() > 1
+                && let Ok(inviter_id) = parts[1].parse::<i64>()
+                && user_id != inviter_id
+                && repo.register_referral(user_id, inviter_id).await
+            {
+                bot.send_message(
+                    msg.chat.id,
+                    format!(
+                        "🎁 <b>Добро пожаловать!</b>\n\nТы зашел по приглашению: тебе начислено {} стартовых трека, а твоему другу +2 бонуса!",
+                        STARTING_CREDITS
+                    ),
+                )
+                .parse_mode(teloxide::types::ParseMode::Html)
+                .await?;
             }
 
             // После обработки реферала или если его нет — показываем профиль
@@ -154,7 +164,7 @@ async fn handle_message(
         // 2. ОБРАБОТКА КОМАНДЫ /PROFILE
         if text == "/profile" {
             let balance = repo.get_balance(user_id).await;
-            let ref_link = format!("https://t.me{}", user_id);
+            let ref_link = format!("https://t.me/{}?start={}", bot_username, user_id);
 
             bot.send_message(
                 msg.chat.id,
@@ -176,6 +186,18 @@ async fn handle_message(
         // 3. ОБРАБОТКА ССЫЛОК YOUTUBE
         if text.contains("youtu") {
             let balance = repo.get_balance(user_id).await;
+            let request_id = match repo.save_track_request(user_id, text.trim()).await {
+                Ok(request_id) => request_id,
+                Err(e) => {
+                    bot.send_message(
+                        msg.chat.id,
+                        format!("❌ Не удалось сохранить ссылку: {}", e),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
+
             bot.send_message(
                 msg.chat.id,
                 format!(
@@ -184,7 +206,7 @@ async fn handle_message(
                 ),
             )
             .parse_mode(teloxide::types::ParseMode::Html)
-            .reply_markup(make_keyboard(text))
+            .reply_markup(make_keyboard(&request_id))
             .await?;
         }
         // Если просто текст — подсказываем, что делать
@@ -218,14 +240,15 @@ async fn handle_callback(
             return Ok(());
         }
 
-        // ОБРАБОТКА ПРЕСЕТОВ
-        let parts: Vec<&str> = data.split('|').collect();
-        if parts.len() < 2 {
+        let Some(msg) = q.message else {
+            bot.answer_callback_query(q.id).await?;
             return Ok(());
-        }
+        };
 
-        let preset_raw = parts[0];
-        let url = parts[1];
+        // ОБРАБОТКА ПРЕСЕТОВ
+        let Some((preset_raw, request_id)) = data.split_once('|') else {
+            return Ok(());
+        };
 
         let preset = match preset_raw {
             "bass" => AudioPreset::CarBass,
@@ -233,6 +256,25 @@ async fn handle_callback(
             "extreme" => AudioPreset::ExtremeLow,
             "8d" => AudioPreset::Surround8D,
             _ => return Ok(()),
+        };
+
+        let url = match repo.get_track_request(user_id, request_id).await {
+            Ok(Some(url)) => url,
+            Ok(None) => {
+                bot.answer_callback_query(q.id).await?;
+                bot.send_message(
+                    chat_id,
+                    "⚠️ Ссылка устарела. Пришли YouTube-ссылку еще раз.",
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(e) => {
+                bot.answer_callback_query(q.id).await?;
+                bot.send_message(chat_id, format!("❌ Ошибка БД: {}", e))
+                    .await?;
+                return Ok(());
+            }
         };
 
         // Проверка баланса ПЕРЕД запуском скачивания
@@ -247,34 +289,59 @@ async fn handle_callback(
             return Ok(());
         }
 
-        if let Some(msg) = q.message {
-            let _permit = semaphore.acquire().await.unwrap();
-            let _ = bot.answer_callback_query(q.id).await;
+        let _permit = match semaphore.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => {
+                let _ = repo.add_balance(user_id, 1).await;
+                bot.answer_callback_query(q.id).await?;
+                bot.send_message(chat_id, "❌ Внутренняя ошибка очереди. Кредит возвращен.")
+                    .await?;
+                return Ok(());
+            }
+        };
 
-            bot.edit_message_text(chat_id, msg.id(), "🏎 Запускаю двигатели... Процесс пошел!")
-                .await?;
+        let _ = bot.answer_callback_query(q.id).await;
+        let _ = bot
+            .edit_message_text(chat_id, msg.id(), "🏎 Запускаю двигатели... Процесс пошел!")
+            .await;
 
-            match service.process_track(url, preset).await {
-                Ok((path, meta)) => {
-                    let mins = meta.duration / 60;
-                    let secs = meta.duration % 60;
-                    let duration_str = format!("{:02}:{:02}", mins, secs);
+        match service.process_track(&url, preset).await {
+            Ok((path, meta)) => {
+                let mins = meta.duration / 60;
+                let secs = meta.duration % 60;
+                let duration_str = format!("{:02}:{:02}", mins, secs);
+                let title = html_escape(&meta.title);
+                let artist = html_escape(&meta.artist);
 
-                    let file = teloxide::types::InputFile::file(&path)
-                        .file_name(format!("{}.mp3", meta.title));
+                let file = teloxide::types::InputFile::file(&path)
+                    .file_name(format!("{}.mp3", safe_audio_filename(&meta.title)));
 
-                    let _ = bot.send_audio(chat_id, file)
-                        .caption(format!(
-                            "✅ <b>Готово для авто!</b>\n\n🎵 {}\n👤 {}\n⏱ Длительность: <code>{}</code>", 
-                            meta.title, meta.artist, duration_str
-                        ))
-                        .parse_mode(teloxide::types::ParseMode::Html)
+                let send_result = bot
+                    .send_audio(chat_id, file)
+                    .caption(format!(
+                        "✅ <b>Готово для авто!</b>\n\n🎵 {}\n👤 {}\n⏱ Длительность: <code>{}</code>",
+                        title, artist, duration_str
+                    ))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await;
+
+                let _ = tokio::fs::remove_file(path).await;
+
+                if let Err(e) = send_result {
+                    let _ = repo.add_balance(user_id, 1).await;
+                    let _ = bot
+                        .send_message(
+                            chat_id,
+                            format!("❌ Не удалось отправить аудио: {}. Кредит возвращен.", e),
+                        )
                         .await;
-                    let _ = tokio::fs::remove_file(path).await;
                 }
-                Err(e) => {
-                    let _ = bot.send_message(chat_id, format!("❌ Ошибка: {}", e)).await;
-                }
+            }
+            Err(e) => {
+                let _ = repo.add_balance(user_id, 1).await;
+                let _ = bot
+                    .send_message(chat_id, format!("❌ Ошибка: {}. Кредит возвращен.", e))
+                    .await;
             }
         }
     }
@@ -286,16 +353,26 @@ async fn handle_buy_credits(bot: Bot, chat_id: ChatId) -> ResponseResult<()> {
         chat_id,
         "10 Премиум-загрузок",
         "Добавляет 10 кредитов для прокачки музыки (включая 8D эффект)",
-        "payload_10_credits",
+        CREDIT_PACKAGE_PAYLOAD,
         "XTR",
-        vec![LabeledPrice::new("10 кредитов", 150)], // ЦЕНА: 150 Звезд (~$3)
+        vec![LabeledPrice::new(
+            format!("{} кредитов", PACKAGE_CREDITS),
+            PACKAGE_STARS,
+        )],
     )
     .await?;
     Ok(())
 }
 
 async fn handle_pre_checkout(bot: Bot, q: PreCheckoutQuery) -> ResponseResult<()> {
-    bot.answer_pre_checkout_query(q.id, true).await?;
+    if is_credit_package(&q.currency, q.total_amount, &q.invoice_payload) {
+        bot.answer_pre_checkout_query(q.id, true).await?;
+    } else {
+        bot.answer_pre_checkout_query(q.id, false)
+            .error_message("Некорректный платеж. Попробуй заново.")
+            .await?;
+    }
+
     Ok(())
 }
 
@@ -304,12 +381,68 @@ async fn handle_successful_payment(
     msg: Message,
     repo: Arc<dyn UserRepository>,
 ) -> ResponseResult<()> {
+    let Some(payment) = msg.successful_payment() else {
+        return Ok(());
+    };
+
+    if !is_credit_package(
+        &payment.currency,
+        payment.total_amount,
+        &payment.invoice_payload,
+    ) {
+        log::warn!(
+            "Rejected successful payment with unexpected package: currency={}, total_amount={}, payload={}",
+            payment.currency,
+            payment.total_amount,
+            payment.invoice_payload
+        );
+        bot.send_message(
+            msg.chat.id,
+            "⚠️ Платеж получен, но пакет не распознан. Напиши в поддержку.",
+        )
+        .await?;
+        return Ok(());
+    }
+
     let user_id = msg.chat.id.0;
-    let _ = repo.add_balance(user_id, 10).await;
+    let _ = repo.add_balance(user_id, PACKAGE_CREDITS).await;
     bot.send_message(
         msg.chat.id,
-        "🎉 Успешно! Вам начислено 10 кредитов. Погнали! 🏎💨",
+        format!(
+            "🎉 Успешно! Вам начислено {} кредитов. Погнали! 🏎💨",
+            PACKAGE_CREDITS
+        ),
     )
     .await?;
     Ok(())
+}
+
+fn is_credit_package(currency: &str, total_amount: u32, invoice_payload: &str) -> bool {
+    currency == "XTR" && total_amount == PACKAGE_STARS && invoice_payload == CREDIT_PACKAGE_PAYLOAD
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn safe_audio_filename(title: &str) -> String {
+    let cleaned: String = title
+        .chars()
+        .map(|ch| match ch {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            ch if ch.is_control() => '_',
+            ch => ch,
+        })
+        .collect();
+
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        "track".to_string()
+    } else {
+        trimmed.chars().take(80).collect()
+    }
 }

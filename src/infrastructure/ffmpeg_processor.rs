@@ -22,7 +22,13 @@ impl AudioService for FFmpegProcessor {
         let info_output = Command::new("yt-dlp")
             .args([
                 "--print",
-                "%(title)s|%(uploader)s|%(thumbnail)s|%(duration)s",
+                "%(title)s",
+                "--print",
+                "%(uploader)s",
+                "--print",
+                "%(thumbnail)s",
+                "--print",
+                "%(duration)s",
                 "--no-warnings",
                 url,
             ])
@@ -30,11 +36,26 @@ impl AudioService for FFmpegProcessor {
             .await
             .map_err(|e| AudioError::DownloadError(e.to_string()))?;
 
+        if !info_output.status.success() {
+            return Err(AudioError::DownloadError(
+                String::from_utf8_lossy(&info_output.stderr)
+                    .trim()
+                    .to_string(),
+            ));
+        }
+
         let info_str = String::from_utf8_lossy(&info_output.stdout);
-        let parts: Vec<&str> = info_str.split('|').collect();
+        let mut lines = info_str.lines();
+        let title = lines.next().unwrap_or("Unknown Track");
+        let artist = lines.next().unwrap_or("Unknown Artist");
+        let thumbnail_url = lines
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let duration_raw = lines.next().unwrap_or("0");
 
         // Парсим длительность в секундах
-        let duration: u64 = parts.get(3).unwrap_or(&"0").trim().parse().unwrap_or(0);
+        let duration: u64 = duration_raw.trim().parse().unwrap_or(0);
 
         // ПРОВЕРКА ДЛИТЕЛЬНОСТИ (Лимит 45 минут = 2700 секунд)
         // Это важно, чтобы файл не превысил лимит Telegram в 50МБ при 320kbps
@@ -46,9 +67,9 @@ impl AudioService for FFmpegProcessor {
         }
 
         let metadata = AudioMetadata {
-            title: clean_title(parts.get(0).unwrap_or(&"Unknown Track")),
-            artist: parts.get(1).unwrap_or(&"Unknown Artist").trim().to_string(),
-            thumbnail_url: parts.get(2).map(|s| s.trim().to_string()),
+            title: clean_title(title),
+            artist: artist.trim().to_string(),
+            thumbnail_url: thumbnail_url.map(ToOwned::to_owned),
             duration, // Новое поле
         };
 
@@ -107,15 +128,15 @@ impl AudioService for FFmpegProcessor {
 
         if let Some(thumb_url) = &metadata.thumbnail_url {
             let client = reqwest::Client::new();
-            if let Ok(resp) = client.get(thumb_url).send().await {
-                if let Ok(bytes) = resp.bytes().await {
-                    tag.add_frame(id3::frame::Picture {
-                        mime_type: "image/jpeg".to_string(),
-                        picture_type: id3::frame::PictureType::CoverFront,
-                        description: "Cover".to_string(),
-                        data: bytes.to_vec(),
-                    });
-                }
+            if let Ok(resp) = client.get(thumb_url).send().await
+                && let Ok(bytes) = resp.bytes().await
+            {
+                tag.add_frame(id3::frame::Picture {
+                    mime_type: "image/jpeg".to_string(),
+                    picture_type: id3::frame::PictureType::CoverFront,
+                    description: "Cover".to_string(),
+                    data: bytes.to_vec(),
+                });
             }
         }
         let _ = tag.write_to_path(&output, Version::Id3v24);
